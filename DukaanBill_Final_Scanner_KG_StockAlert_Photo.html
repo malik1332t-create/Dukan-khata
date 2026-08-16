@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#111827">
+<title>Dukaan Bill Scanner</title>
+<style>
+body{font-family:Arial;margin:0;background:#f3f4f6;color:#111827}
+header{background:#111827;color:#fff;padding:16px;font-size:21px;font-weight:bold}
+nav{display:flex;background:#fff;position:sticky;top:0;z-index:5}
+nav button{flex:1;padding:13px;border:0;background:#fff;color:#111827}
+nav button.active{background:#111827;color:#fff}
+main{max-width:700px;margin:auto;padding:12px}.tab{display:none}.active{display:block}
+.card{background:#fff;padding:15px;margin-bottom:12px;border-radius:14px;box-shadow:0 2px 8px #0001}
+input,button{font:inherit;padding:11px;border-radius:9px;border:1px solid #ddd;margin:4px 0}
+input{width:100%;box-sizing:border-box}button{background:#111827;color:#fff;border:0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.row{display:grid;grid-template-columns:1fr auto;gap:7px}
+.item{display:flex;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid #eee}.grow{flex:1}
+.total{font-size:24px;font-weight:bold;text-align:right;margin:15px 0}.danger{background:#dc2626}.gray{background:#ddd;color:#111}
+#scannerBox{display:none;margin-top:10px}#video{width:100%;border-radius:12px;background:#000;display:block}
+#scanStatus{font-size:13px;color:#6b7280;margin:7px 0}.scanBtn{width:100%;background:#16a34a}
+</style>
+</head>
+<body>
+<header>🛒 Dukaan Bill <small style="float:right">Scanner</small></header>
+<nav><button class="active" onclick="tab('bill',this)">🧾 Bill</button><button onclick="tab('products',this)">📦 Products</button><button onclick="tab('reports',this)">📊 Reports</button></nav>
+<main>
+<section id="bill" class="tab active">
+<div class="card">
+<h3>📷 Barcode Scanner</h3>
+<button class="scanBtn" onclick="startScanner()">📷 Barcode Scanner</button>
+<button style="width:100%;background:#2563eb" onclick="openPhotoPicker()">🖼️ Product Photo Scanner (No Barcode)</button>
+<input id="photoInput" type="file" accept="image/*" capture="environment" style="display:none" onchange="photoChosen(event)">
+<div id="photoChoices"></div>
+<div id="scannerBox">
+<video id="video" playsinline muted></video>
+<p id="scanStatus">Barcode ko camera ke saamne rakho...</p>
+<button onclick="stopScanner()">Close Scanner</button>
+</div>
+<div class="row"><input id="barcode" placeholder="Ya barcode number type karo"><button onclick="addBarcode()">ADD</button></div>
+<input id="search" placeholder="Search product..." oninput="searchProducts()"><div id="results"></div>
+</div>
+<div class="card"><h3>Current Bill</h3><div id="cart"></div><div class="total">Total: Rs. <span id="total">0</span></div>
+<input id="cash" type="number" placeholder="Cash received"><div class="grid"><button onclick="doneBill()">DONE</button><button class="gray" onclick="clearBill()">CLEAR</button></div><p id="change"></p></div>
+</section>
+<section id="products" class="tab"><div class="card"><h3>Add Product</h3><input id="name" placeholder="Product name"><input id="code" placeholder="Barcode"><div class="grid"><input id="purchase" type="number" step="0.01" placeholder="Purchase rate"><input id="sale" type="number" step="0.01" placeholder="Sale rate"></div><select id="unit" style="width:100%;padding:11px;border-radius:9px;border:1px solid #ddd;margin:4px 0"><option value="pcs">Piece / Bottle / Pack</option><option value="kg">Per KG</option></select><input id="stock" type="number" step="0.01" placeholder="Stock (kg ya pieces)"><input id="photo" type="file" accept="image/*" style="width:100%;padding:8px"><div style="font-size:12px;color:#6b7280">Per KG item: rate 1 KG ka rakho, stock kg mein rakho (e.g. 25.5 kg).</div><button style="width:100%" onclick="saveProduct()">SAVE PRODUCT</button></div><div class="card"><h3>Products</h3><div id="productList"></div></div></section>
+<section id="reports" class="tab"><div class="card"><h3>Today's Report</h3><p>Sales: Rs. <b id="sales">0</b></p><p>Profit: Rs. <b id="profit">0</b></p><p>Bills: <b id="bills">0</b></p></div><div class="card"><h3>⚠️ Stock Alert</h3>
+<p style="font-size:13px;color:#6b7280">Jab stock is number se kam ya barabar hoga, alert dikhega.</p>
+<input id="lowLimit" type="number" step="0.01" min="0" placeholder="Alert limit (default 5)" value="5" onchange="saveLowLimit()">
+<div id="low"></div></div></section>
+</main>
+<script>
+const K='DUKAAN_BILL_SCANNER_V1';
+let data=JSON.parse(localStorage.getItem(K)||'null')||{products:[
+{id:1,name:'Pepsi 1.5L',code:'896400001',purchase:160,sale:180,stock:50,unit:'pcs'},
+{id:2,name:'7UP 1.5L',code:'896400002',purchase:160,sale:180,stock:50,unit:'pcs'},
+{id:3,name:'Dew 1.5L',code:'896400003',purchase:160,sale:180,stock:50,unit:'pcs'},
+{id:4,name:'Sting',code:'896400004',purchase:80,sale:100,stock:50,unit:'pcs'}],bills:[]};
+let cart=[],stream=null,scanning=false,detector=null;
+const $=x=>document.getElementById(x);
+const save=()=>localStorage.setItem(K,JSON.stringify(data));
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+function tab(id,b){document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));$(id).classList.add('active');document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');renderProducts();report()}
+function addBarcode(){let c=$('barcode').value.trim(),p=data.products.find(x=>x.code===c);if(!p)return alert('Product nahi mila');add(p.id);$('barcode').value=''}
+function add(id){let p=data.products.find(x=>x.id==id);if(p.stock<=0)return alert('Stock khatam hai');let x=cart.find(x=>x.id==id);x?x.qty+=(p.unit==='kg'?0.5:1):cart.push({id,qty:1});if(x)x.qty=+x.qty.toFixed(2);renderCart()}
+function searchProducts(){let q=$('search').value.toLowerCase();$('results').innerHTML=q?data.products.filter(p=>(p.name+' '+p.code).toLowerCase().includes(q)).map(p=>`<div class=item><div class=grow><b>${esc(p.name)}</b><br>Rs.${p.sale}/${p.unit==='kg'?'kg':'pc'} · Stock ${p.stock} ${p.unit==='kg'?'kg':'pcs'}</div><button onclick="add(${p.id})">Add</button></div>`).join(''):''}
+function renderCart(){let t=0;$('cart').innerHTML=cart.map((x,i)=>{let p=data.products.find(p=>p.id==x.id),v=p.sale*x.qty;t+=v;return `<div class=item><div class=grow><b>${esc(p.name)}</b><br>Rs.${p.sale} × ${x.qty}</div><button onclick="q(${i},-1)">−</button><b>${x.qty} ${p.unit==='kg'?'kg':''}</b><button onclick="q(${i},1)">+</button><b>Rs.${v.toFixed(2)}</b></div>`}).join('')||'Bill empty';$('total').textContent=t}
+function q(i,n){let p=data.products.find(p=>p.id==cart[i].id);let step=p.unit==='kg'?0.5:1;cart[i].qty=+(cart[i].qty+n*step).toFixed(2);if(cart[i].qty>p.stock)cart[i].qty=p.stock;if(cart[i].qty<=0)cart.splice(i,1);renderCart()}
+function clearBill(){cart=[];$('cash').value='';$('change').textContent='';renderCart()}
+function doneBill(){if(!cart.length)return alert('Bill empty');let total=cart.reduce((s,x)=>s+data.products.find(p=>p.id==x.id).sale*x.qty,0),cash=Number($('cash').value);if(cash<total)return $('change').textContent='⚠️ Cash kam hai';let profit=0;cart.forEach(x=>{let p=data.products.find(p=>p.id==x.id);if(p&&!p.unit)p.unit='pcs';p.stock-=x.qty;profit+=(p.sale-p.purchase)*x.qty});data.bills.push({date:new Date().toISOString(),total,profit});save();$('change').textContent='💵 Wapas: Rs.'+(cash-total);cart=[];$('cash').value='';renderCart();renderProducts();report();let lowNow=data.products.filter(p=>p.stock<=getLowLimit());if(lowNow.length){alert('🚨 STOCK ALERT!\\n'+lowNow.map(p=>p.name+' — '+p.stock+(p.unit==='kg'?' kg':' pcs')+' baqi').join('\\n'))}else{alert('Bill save ho gaya ✅')}}
+function openPhotoPicker(){$('photoInput').click()}
+function photoChosen(e){
+  const file=e.target.files&&e.target.files[0];
+  if(!file)return;
+  // A fully automatic "recognize any product from one photo" system needs an AI vision service.
+  // This offline version instead shows the shop's saved products for confirmation, preventing wrong billing.
+  const choices=data.products.map(p=>`<div class=item><div class=grow><b>${esc(p.name)}</b><br><small>Rs.${p.sale}/${p.unit==='kg'?'kg':'pc'} · Stock ${p.stock}</small></div><button onclick="add(${p.id});closePhotoChoices()">Select</button></div>`).join('');
+  $('photoChoices').innerHTML=`<div class="card"><b>📸 Photo received.</b><p style="font-size:13px;color:#6b7280">Photo se exact product pehchanne ke liye AI vision chahiye. Galat billing se bachne ke liye product confirm karo:</p>${choices}<button class="gray" onclick="closePhotoChoices()">Cancel</button></div>`;
+}
+function closePhotoChoices(){$('photoChoices').innerHTML='';$('photoInput').value=''}
+function saveProduct(){let n=$('name').value.trim(),c=$('code').value.trim(),pu=+$('purchase').value,s=+$('sale').value,st=+$('stock').value;if(!n||!c||!s)return alert('Name, barcode aur sale rate bharo');if(data.products.some(p=>p.code===c))return alert('Barcode already exists');data.products.push({id:Date.now(),name:n,code:c,purchase:pu,sale:s,stock:st,unit:$('unit').value});save();['name','code','purchase','sale','stock'].forEach(x=>$(x).value='');$('unit').value='pcs';renderProducts();alert('Product save ho gaya')}
+function renderProducts(){$('productList').innerHTML=data.products.map(p=>`<div class=item><div class=grow><b>${esc(p.name)}</b><br><small>${p.code} · Sale Rs.${p.sale}/${p.unit==='kg'?'kg':'pc'} · Stock ${p.stock} ${p.unit==='kg'?'kg':'pcs'}</small></div><button class=danger onclick="del(${p.id})">Delete</button></div>`).join('')}
+function del(id){data.products=data.products.filter(p=>p.id!=id);save();renderProducts()}
+function getLowLimit(){let v=Number(localStorage.getItem('DUKAAN_LOW_LIMIT'));return Number.isFinite(v)&&v>=0?v:5}
+function saveLowLimit(){let v=Number($('lowLimit').value);if(!Number.isFinite(v)||v<0)v=5;localStorage.setItem('DUKAAN_LOW_LIMIT',String(v));report();alert('Stock alert limit save ho gayi')}
+function report(){let d=new Date().toDateString(),b=data.bills.filter(x=>new Date(x.date).toDateString()===d);$('sales').textContent=b.reduce((s,x)=>s+x.total,0);$('profit').textContent=b.reduce((s,x)=>s+x.profit,0);$('bills').textContent=b.length;let lim=getLowLimit();let low=data.products.filter(p=>p.stock<=lim);$('low').innerHTML=low.map(p=>`<p style="background:#fff1f2;padding:10px;border-radius:8px">🚨 <b>${esc(p.name)}</b> — sirf ${p.stock} ${p.unit==='kg'?'kg':'pcs'} baqi</p>`).join('')||'All stock okay ✅'}
+
+async function startScanner(){
+ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){alert('Camera access is not available in this browser.');return}
+ if(!('BarcodeDetector' in window)){alert('Is browser mein camera barcode scanner supported nahi hai. Chrome/Android ke supported version mein try karo.');return}
+ try{
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}});
+  $('video').srcObject=stream;await $('video').play();$('scannerBox').style.display='block';
+  detector=new BarcodeDetector({formats:['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','codabar','qr_code']});
+  scanning=true;scanFrame();
+ }catch(e){alert('Camera permission allow karo.')}
+}
+async function scanFrame(){
+ if(!scanning)return;
+ try{
+  const codes=await detector.detect($('video'));
+  if(codes.length){
+   const code=codes[0].rawValue;
+   $('barcode').value=code;
+   $('scanStatus').textContent='Scanned: '+code;
+   stopScanner();
+   addBarcode();
+   return;
+  }
+ }catch(e){}
+ requestAnimationFrame(scanFrame);
+}
+function stopScanner(){scanning=false;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}$('video').srcObject=null;$('scannerBox').style.display='none'}
+$('barcode').onkeydown=e=>{if(e.key==='Enter')addBarcode()};
+renderCart();renderProducts();report();
+</script></body></html>
